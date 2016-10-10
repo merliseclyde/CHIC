@@ -1,0 +1,243 @@
+---
+title: "GUSTO Analysis"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Gusto Data
+
+The GUSTO data are available from Steyerberg [2009] book: Clinical Prediction Models, Ch22 for details, page 454 or may be downloaded from  (http://www.clinicalpredictionmodels.org/doku.php?id=rcode_and_data:start)[zip file].  Download and unzip to directory `gusto`.
+
+```{r data}
+library(foreign)
+gusto = read.spss('gusto/GustoW.sav', to.data.frame=T)
+
+# use the same varialbes as Held et al
+gusto = gusto[, c("DAY30", "SEX", "AGE", "KILLIP", "DIA", "HYP", "HRT", "ANT", "PMI", "HEI", "WEI", "HTN", "SMK", "LIP","PAN","FAM","STE","TTR")];
+
+n = as.numeric(dim(gusto)[1]); 
+p = dim(gusto)[2] - 1;
+```
+
+## Compare Priors for Posterior inclusion probabilities
+
+Load libraries.  Install current version from github.  After testing upload to CRAN
+
+```{r libraries}
+library(devtools)
+install_github("merliseclyde/BAS")
+library(BAS);
+library(plotrix);
+```
+
+
+List of priors used
+```{r priors}
+modelpriors = list(uniform(), beta.binomial(1, 1)); 
+betapriors= list(
+	CCH(a = 1 / 2, b = n, s = 0), 
+	CCH(a = 1, b = n, s = 0), 
+	CCH(a = 1 / 2, b = n / 2, s = 0), 
+	CCH(a = 1, b = n / 2, s = 0), 
+	beta.prime(n = n), 
+	CCH(a = 1, b = 2, s = n + 3),
+	robust(n = n), 
+	intrinsic(n = n), 
+	hyper.g.n(alpha = 3, n = n), 
+	CCH(a = 0.02, b = 0.02 * max(n, p^2), s = 0),
+	g.prior(n), 
+	testBF.prior(n),
+	Jeffreys(), 
+	CCH(a = 1, b = 2, s = 0), 
+	CCH(a = 2, b = 2, s = 0), 
+	EB.local(), 
+	aic.prior(), 
+	bic.prior(n)
+);
+
+names = c('CH(a=1/2,b=n)', 'CH(a=1,b=n)', 'CH(a=1/2,b=n/2)', 'CH(a=1,b=n/2)', 'Beta-prime', 'ZS adpated', 'Robust', 'Intrinsic', 'Hyper-g/n', 'Benchmark', 'DBF, g=n', 'TBF, g=n', 'Jeffreys', 'Hyper-g', 'Uniform', 'Local EB', 'AIC', 'BIC');
+```
+
+Setup output arrays.
+```{r preliminaries}
+n.methods = length(betapriors)
+incprob = array(NA, dim = c(n.methods, p, 2));
+bma = array(NA, dim = c(n.methods, p + 1, 2));
+runtime = matrix(NA, nrow = n.methods, ncol = 2); 
+g = array(NA, dim=c(n.methods, 2, 2)); 
+## strue, topsize, l2est, l1est, runtime
+```
+
+Loop over models and priors.  Change to enumeration once everything is finialzed.
+
+```{r fitting, cache=TRUE}
+n.models=2^p
+method = "BAS"
+
+for(l in 1:2){ ## different model priors
+  for(k in c(1:n.methods)){ ## different betaprior
+    start.time = proc.time();
+    results = bas.glm(DAY30 ~ ., data = gusto, 
+                      betaprior = eval(betapriors[[k]]), 
+                      n.models = n.models, 
+                      family = binomial(link = 'logit'), 
+                      modelprior = modelpriors[[l]], 
+                      initprobs = 'eplogp',
+                      method=method, laplace = FALSE);
+    runtime[k, l] = (proc.time() - start.time)[3];
+    
+    ghat = results$shrinkage/(1 - results$shrinkage)
+    ghat = ghat[results$size != 1]
+    postprobs = results$postprobs[results$size != 1]
+    g[k, 1, l] = ghat[which.max(postprobs)]
+    g[k, 2, l] = ghat %*% postprobs/sum(postprobs)
+    
+# CHg(a = 1, b = n, s = 0)	g = 295.7
+# Beta-prime			g = 314.3
+# ZS adapted			g = 50.2
+# Benchmark 			g = 30.6
+# Hyper-g				g = 21.3
+# Robust				g = 344.9
+# Hyper-g/n			g = 34.2
+# Intrinsic			g = 309.9
+# Local EB			g = 24.5 
+
+    ## BMA parameter estimation    
+    #bma[k, , l] = coef(results)[[1]];
+    
+    ## marginal includsion probability
+    incprob[k, , l] = results$probne0[-1];
+    if (k == 11 & l == 2 )  {
+      results
+      results.gprior = results  # save g-prior for marginal calculation
+      }
+  }
+} 
+
+```
+
+
+```{r g}
+dimnames(g) =list(names, c("g.HPM", "g.BMA"), c("Uniform", "BB"))
+g
+```
+
+Plot a  Black-White heatmap of the  posterior inclusion probabilities
+```{r heatmaps, echo=FALSE, fig.height=8, fig.width=10}
+order = c(1:6, 10, 7:9, 11:18);
+names[order];
+
+#pdf(file = 'figures/GUSTO-I_incprob_bw.pdf', width = 7, height = 8);
+#par(mar = c(4, 7, 1.5, 1), mfrow = c(2, 1), oma = c(5, 0, 0, 0));
+par(mar = c(4, 7, 1.5, 1), oma = c(5, 0, 0, 0))
+x = incprob[order, , 1];
+color2D.matplot(x, c(1 - min(x), 1 - max(x)), c(1 - min(x), 1 - max(x)), c(1 - min(x), 1 - max(x)), main = "Uniform Prior", border = NA, axes = FALSE, xlab = '', ylab = '');
+axis(1, (1:p) - 0.5, paste('X', 1:p, sep = ''), las = 1, cex.axis = 1, mgp = c(0, 0.3, 0), tck = 0);
+axis(2, (18:1) - 0.5, names[order], las = 1, cex.axis = 1, mgp = c(0, 0.3, 0), tck = 0);
+
+
+x = incprob[order, , 2];
+color2D.matplot(x, c(1 - min(x), 1 - max(x)), c(1 - min(x), 1 - max(x)), c(1 - min(x), 1 - max(x)), main = "Beta-Binomial(1,1) Prior", border = NA, axes = FALSE, xlab = '', ylab = '');
+axis(1, (1:p) - 0.5, paste('X', 1:p, sep = ''), las = 1, cex.axis = 1, mgp = c(0, 0.3, 0), tck = 0);
+axis(2, (18:1) - 0.5, names[order], las = 1, cex.axis = 1, mgp = c(0, 0.3, 0), tck = 0);
+
+testcol = color.gradient(c(1, 0), c(1, 0), c(1, 0), nslices = 7);
+color.legend(1, -4, 7, -3, c(0, 0.5, 1), testcol, align = "rb", gradient = "x");
+
+
+```
+
+Color version for online
+
+```{r color-heatmap, echo=FALSE, fig.width=10, fig.height=8}
+
+order = c(1:6, 10, 7:9, 11:18);
+
+
+par(mar = c(4, 7, 1.5, 1));
+testcol = color.gradient(c(0, 0), c(0, 0), c(0, 0), nslices = 64);
+
+x = incprob[order, , 1];
+cellcol = matrix('#000000', nrow = 18, ncol = p);
+cellcol[x <= 0.5] = color.scale(0.5 - x[x <= 0.5], 1 - 2 * min(0.5 - x[x <= 0.5]), c(1, 0 + 2 * min(x)), c(1, 0 + 2 * min(x)));
+cellcol[x > 0.5] = color.scale(x[x > 0.5], c(1 - 2 * min(x[x > 0.5] - 0.5), 2 - 2 * max(x)), c(1 - 2 * min(x[x > 0.5] - 0.5), 2 - 2 * max(x)), 1 - 2 * min(x[x > 0.5] - 0.5));
+color2D.matplot(x, cellcolors = cellcol, main = "Uniform Prior", border = 'grey', axes = FALSE, xlab = '', ylab = '');
+axis(1, (1:p) - 0.5, paste('X', 1:p, sep = ''), las = 1, cex.axis = 1, mgp = c(0, 0.3, 0), tck = 0);
+axis(2, (18:1) - 0.5, names[order], las = 1, cex.axis = 1, mgp = c(0, 0.3, 0), tck = 0);
+
+legval = seq(0, 1, length.out = 7);
+legcol = rep('#000000', 7);
+legcol[legval <= 0.5] = color.scale(1 - legval[legval <= 0.5], 1, c(1, 0), c(1, 0)); 
+legcol[legval >= 0.5] = color.scale(legval[legval >= 0.5], c(1, 0), c(1, 0), 1);
+
+color.legend(1, -4, 7, -3, c(0, 0.5, 1), legcol, align = "rb", gradient = "x");
+
+x = incprob[order, , 2];
+cellcol = matrix('#000000', nrow = 18, ncol = p);
+cellcol[x <= 0.5] = color.scale(0.5 - x[x <= 0.5], 1 - 2 * min(0.5 - x[x <= 0.5]), c(1, 0 + 2 * min(x)), c(1, 0 + 2 * min(x)));
+cellcol[x > 0.5] = color.scale(x[x > 0.5], c(1 - 2 * min(x[x > 0.5] - 0.5), 2 - 2 * max(x)), c(1 - 2 * min(x[x > 0.5] - 0.5), 2 - 2 * max(x)), 1 - 2 * min(x[x > 0.5] - 0.5));
+color2D.matplot(x, cellcolors = cellcol, main = "Beta-Binomial(1,1) Prior", border = 'grey', axes = FALSE, xlab = '', ylab = '');
+axis(1, (1:p) - 0.5, paste('X', 1:p, sep = ''), las = 1, cex.axis = 1, mgp = c(0, 0.3, 0), tck = 0);
+axis(2, (18:1) - 0.5, names[order], las = 1, cex.axis = 1, mgp = c(0, 0.3, 0), tck = 0);
+
+color.legend(1, -4, 7, -3, c(0, 0.5, 1), 
+             legcol, align = "rb", gradient = "x");
+```
+## marginal likelihood of g
+
+```{r marg.g}
+# problem with scoping in how prior list is constructed, need to reset k for the prior to evaluate correctly!
+
+k = 11
+eval(results.gprior$call$betaprior)  # g-prior used
+
+marg.g = function(grid.g, results) {
+  g = eval(results$call$betaprior)$hyper.parameters$g
+  logmarg.base = results$logmarg  +  .5*log(1+ g)*(results$size - 1) -
+                .5*results$Q/(1 + g)
+  logmarg = logmarg.base - .5*(results$size - 1)*log(1 + grid.g) -
+           .5*results$Q/(1 + grid.g)
+  logmarg =logmarg[results$size != 1]
+  return(logmarg)       
+}
+
+grid.g = matrix(1:500, ncol=1);
+
+logmarg.g = t(apply(grid.g, 1, FUN=marg.g, results.gprior))
+dim(logmarg.g)
+
+
+prior.probs = results.gprior$priorprobs[results.gprior$size !=1]
+prior.probs = prior.probs/sum(prior.probs)
+n.models = length(prior.probs) 
+n.models
+marg.density.uniform =  exp(logmarg.g) %*% rep(1,n.models)/n.models 
+marg.density.BB = exp(logmarg.g) %*% prior.probs
+
+```
+
+```{r plot}
+
+tmp = max(marg.density.uniform)
+plot(grid.g, marg.density.uniform/tmp, type = 'l', xlab = 'g', ylab = 'L(g)');
+
+tmp = max(marg.density.BB)
+lines(grid.g, marg.density.BB/tmp, col = 2, lty = 2);
+
+# show estimates for hyper.g/n,  robust, intrinsic, EB
+show = c(7:9, 16)
+n.show= length(show)
+points(g[show, 1,1], rep(0, n.show), pch=14+1:n.show, col=(1:n.show +1))
+#legend('topright', legend = c('Uniform prior', 'Beta-Binomial(1,1) prior'), lty = 2:1, col = 2:1)
+legend('right', legend=names[show], pch=14+1:n.show, col=(1:n.show+1))
+
+```
+
+Caption:  Dashed line is marginal likelihood of $g$ under the Beta-Binomial(1,1) prior over models, while the solid line is the marginal likelihood under the uniform prior on models.  The points indicate the estimates of $g$ under the highest probability models for  Empirical Bayes (diamond), hyper-g/n  (triangle), intrinsic (circle), robust (square).
+
+
