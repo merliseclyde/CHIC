@@ -26,7 +26,7 @@ p = dim(gusto)[2] - 1;
 
 ## Compare Priors for Posterior inclusion probabilities
 
-Load libraries.  Install current version from github.  After testing upload to CRAN
+Load libraries.  Install current version of BAS from github.  After testing upload to CRAN.
 
 ```{r libraries}
 library(devtools)
